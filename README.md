@@ -239,7 +239,18 @@ If you want to resume the training process, you can use the following command (w
 accelerate launch --num_processes 1 --num_machines 1 --deepspeed_config_file ds_config.json scripts/train.py --run_name Your_own_name --action_head flowmatching --use_augmentation --lr 1e-5 --dropout 0.2 --weight_decay 1e-3 --batch_size 16 --image_size 448 --max_steps 80000 --log_interval 10 --ckpt_interval 2500 --warmup_steps 1000 --grad_clip_norm 1.0 --num_layers 8 --horizon 50 --finetune_vlm --finetune_action_head --disable_wandb --vlm_name OpenGVLab/InternVL3-1B --dataset_config_path dataset/config.yaml --per_action_dim 24 --state_dim 24 --save_dir /your/path/to/save/the/checkpoints/ --resume  --resume_path /the/checkpoint/path/you/want/to/resume/from/step_20000
 ```
 
-
+## 📚 Citation
+```bash
+@misc{lin2025evo1lightweightvisionlanguageactionmodel,
+      title={Evo-1: Lightweight Vision-Language-Action Model with Preserved Semantic Alignment}, 
+      author={Tao Lin and Yilei Zhong and Yuxin Du and Jingjing Zhang and Jiting Liu and Yinxinyu Chen and Encheng Gu and Ziyan Liu and Hongyi Cai and Yanwen Zou and Lixing Zou and Zhaoye Zhou and Gen Li and Bo Zhao},
+      year={2025},
+      eprint={2511.04555},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2511.04555}, 
+}
+```
 
 ## 📬 Contact
 
