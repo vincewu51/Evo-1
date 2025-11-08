@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from pathlib import Path
-from tqdm.auto import tqdm  
+from tqdm.auto import tqdm
 from typing import List, Union, Dict, Any
 from torch.utils.data import Dataset
 import torchvision.transforms as T
@@ -18,6 +18,12 @@ from collections.abc import Iterable
 import multiprocessing as mp
 import logging
 import pickle
+
+try:
+    from torchcodec.decoders import VideoDecoder
+    TORCHCODEC_AVAILABLE = True
+except ImportError:
+    TORCHCODEC_AVAILABLE = False
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -67,13 +73,27 @@ def merge_lerobot_stats(stats_list: List[Dict[str, Dict[str, List[float]]]]) -> 
 
 def _process_parquet_file_worker(args):
     parquet_path, arm_name, dataset_name, dataset_config, dataset_path, task_mapping, action_horizon, max_samples_per_file, cache_dir = args
-    
+
+    # Initialize CUDA in this worker process
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.init()
+        torch.cuda.set_device(0)  # Use GPU 0
+
     try:
+        # Diagnostic logging to debug view_map configuration
+        logging.info(f"Processing {parquet_path.name} for {arm_name}/{dataset_name}")
+        logging.info(f"Received dataset_config keys: {list(dataset_config.keys())}")
+
         view_map = dataset_config.get('view_map', None)
+        logging.info(f"view_map value: {view_map}")
+
         if not view_map:
-            logging.info(f"did not find view_map for '{arm_name}-{dataset_name}', use default mapping")
+            logging.warning(f"WARNING: view_map not found for '{arm_name}-{dataset_name}', falling back to default mapping")
+            logging.warning(f"This may cause video loading to fail if your dataset structure doesn't match the default")
             default_keys = ["image_1", "image_2", "image_3"]
             view_map = {key: f"observation.images.{key}" for key in default_keys}
+            logging.info(f"Using default view_map: {view_map}")
 
         df = pd.read_parquet(parquet_path)
 
@@ -103,14 +123,29 @@ def _process_parquet_file_worker(args):
             sub_df = df.iloc[i: i + action_horizon]
             video_paths = {}
             base_video_path = dataset_path / "videos" / parquet_path.parent.name
+            logging.info(f"Base video path: {base_video_path}")
 
             for view_key, view_folder in view_map.items():
                 full_path = base_video_path / view_folder / f"{parquet_path.stem}.mp4"
-                logging.info(f"full_path {full_path}")
+                logging.info(f"Checking for video: {view_key} -> {full_path}")
                 if full_path.exists():
                     video_paths[view_key] = str(full_path)
+                    logging.info(f"  ✓ Found video for {view_key}")
                 else:
-                    logging.warning(f"missing video file: {full_path}")
+                    logging.warning(f"  ✗ MISSING video file: {full_path}")
+
+            # Validate that we found at least some videos
+            if not video_paths:
+                error_msg = (
+                    f"ERROR: No video files found for {parquet_path.name}!\n"
+                    f"  Base path: {base_video_path}\n"
+                    f"  Expected view_map: {view_map}\n"
+                    f"  Please check:\n"
+                    f"    1. Videos exist in the expected directories\n"
+                    f"    2. view_map in config.yaml matches actual folder names\n"
+                    f"    3. Video filenames match parquet filenames"
+                )
+                raise FileNotFoundError(error_msg)
             
             
             task_index = sub_df.iloc[0].get("task_index", None)
@@ -120,11 +155,19 @@ def _process_parquet_file_worker(args):
                 logging.info(f"cannot find task description from task_index={task_index}")
                 prompt = ""
 
+            # Extract state and apply slicing if configured
+            state = sub_df.iloc[0].get("observation.state", None)
+            if state is not None:
+                state_indices = dataset_config.get('state_indices', None)
+                if state_indices is not None:
+                    # Slice state to only include specified indices
+                    state = [state[i] for i in state_indices]
+
             episode = {
                 "arm_key": arm_name,
                 "dataset_key": dataset_name,
                 "prompt": prompt,
-                "state": sub_df.iloc[0].get("observation.state", None),
+                "state": state,
                 "action": [row["action"] for _, row in sub_df.iterrows()],
                 "video_paths": video_paths,
                 "timestamp": sub_df.iloc[0].get("timestamp", None),
@@ -171,7 +214,7 @@ class LeRobotDataset(Dataset):
 
 
         if cache_dir is None:
-            self.cache_dir = Path("/home/dell/code/lintao/Evo_1/training_data_cache/")
+            self.cache_dir = Path("/home/yifeng/workspace/Evo-1/training_data_cache/")
         else:
             self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -244,14 +287,25 @@ class LeRobotDataset(Dataset):
                     norm_arm_list.append(stats)
                 elif stats_path.exists():
                     stats = compute_lerobot_normalization_stats_from_minmax(stats_path)
-                   
+
                     with open(stats_path_after_compute, "w") as f:
                         json.dump(stats, f, indent=4)
-               
+
                     print(f"computed stats and saved to: {stats_path_after_compute}")
                     norm_arm_list.append(stats)
                 else:
                     raise FileNotFoundError(f"normalization stats file not found: {stats_path}")
+
+                # Apply state slicing to normalization stats if configured
+                state_indices = dataset_config.get('state_indices', None)
+                if state_indices is not None:
+                    print(f"    -- Slicing state stats to indices: {state_indices}")
+                    for stats in norm_arm_list:
+                        if "observation.state" in stats:
+                            state_min = stats["observation.state"]["min"]
+                            state_max = stats["observation.state"]["max"]
+                            stats["observation.state"]["min"] = [state_min[i] for i in state_indices]
+                            stats["observation.state"]["max"] = [state_max[i] for i in state_indices]
             
 
             self.arm2stats_dict[arm_name] = merge_lerobot_stats(norm_arm_list)
@@ -287,14 +341,14 @@ class LeRobotDataset(Dataset):
 
        
         print(f"total {len(parquet_process_units)} parquet files to process")
-        
-   
+
+
         num_processes = min(16, len(parquet_process_units))
 
         print(f"Using {num_processes} processes for concurrent processing")
-        
- 
-        with mp.Pool(processes=num_processes) as pool:
+
+
+        with mp.get_context('spawn').Pool(processes=num_processes) as pool:
             
             total_episodes = 0
             with tqdm(total=len(parquet_process_units), desc="Processing Parquet files to cache") as pbar:
@@ -376,6 +430,31 @@ class LeRobotDataset(Dataset):
                 except Exception as e:
                     logging.info(f"Failed to read video file: {path}")
                     logging.info(f"Error message: {str(e)}")
+                    raise
+
+            elif self.video_backend == "torchcodec":
+                if not TORCHCODEC_AVAILABLE:
+                    raise ImportError("TorchCodec is not installed. Install with: pip install torchcodec")
+
+                try:
+                    device = self.video_backend_kwargs.get("device", "cuda")
+                    decoder = VideoDecoder(path, device=device)
+                    fps = decoder.metadata.average_fps  # Access as attribute, not dict
+                    frame_idx = int(timestamp * fps)
+
+                    # Clamp to valid range
+                    frame_idx = min(frame_idx, len(decoder) - 1)
+
+                    # Get frame (already on GPU as tensor [C, H, W])
+                    frame_tensor = decoder[frame_idx]
+
+                    # Convert to PIL Image (moves to CPU)
+                    frame_np = frame_tensor.cpu().permute(1, 2, 0).numpy().astype(np.uint8)
+                    frames.append(Image.fromarray(frame_np))
+
+                except Exception as e:
+                    logging.error(f"Failed to read video file with TorchCodec: {path}")
+                    logging.error(f"Error message: {str(e)}")
                     raise
 
             elif self.video_backend == "av":

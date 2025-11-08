@@ -18,11 +18,11 @@ data_groups:
 
 
   # This is an example of how to configure the dataset path and view mapping for MetaWorld
-  metaworld_sawyer:
-    Evo1_MetaWorld:
-      path: /home/dell/code/lintao/Evo_1/Evo1_training_dataset/Evo1_MetaWorld
-      view_map:
-        image_1: observation.images.image
+  # metaworld_sawyer:
+  #   Evo1_MetaWorld:
+  #     path: /home/dell/code/lintao/Evo_1/Evo1_training_dataset/Evo1_MetaWorld
+  #     view_map:
+  #       image_1: observation.images.image
 
 
 
@@ -69,3 +69,22 @@ data_groups:
   #     image_1: observation.images.image_1
   #     image_2: observation.images.image_2
   #     image_3: observation.images.image_3
+
+
+
+  # R1Pro robot configuration for 2025 challenge dataset
+  r1pro:
+    challenge_task0006:
+      path: /home/yifeng/workspace/training_data/2025-challenge-demos-task0006
+      view_map:
+        image_1: observation.images.rgb.head
+        image_2: observation.images.rgb.left_wrist
+        image_3: observation.images.rgb.right_wrist
+      # Selected state features (24 dims total):
+      # Left arm joint positions: 158-164 (7)
+      # Right arm joint positions: 197-203 (7)
+      # Left gripper position: 193-194 (2)
+      # Right gripper position: 232-233 (2)
+      # Trunk position: 236-239 (4)
+      # Trunk velocity (first 2): 240-241 (2)
+      state_indices: [158, 159, 160, 161, 162, 163, 164, 193, 194, 197, 198, 199, 200, 201, 202, 203, 232, 233, 236, 237, 238, 239, 240, 241]
