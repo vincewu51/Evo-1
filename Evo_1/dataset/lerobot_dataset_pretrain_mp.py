@@ -120,11 +120,19 @@ def _process_parquet_file_worker(args):
                 logging.info(f"cannot find task description from task_index={task_index}")
                 prompt = ""
 
+            # Extract state and apply slicing if configured
+            state = sub_df.iloc[0].get("observation.state", None)
+            if state is not None:
+                state_indices = dataset_config.get('state_indices', None)
+                if state_indices is not None:
+                    # Slice state to only include specified indices
+                    state = [state[i] for i in state_indices]
+
             episode = {
                 "arm_key": arm_name,
                 "dataset_key": dataset_name,
                 "prompt": prompt,
-                "state": sub_df.iloc[0].get("observation.state", None),
+                "state": state,
                 "action": [row["action"] for _, row in sub_df.iterrows()],
                 "video_paths": video_paths,
                 "timestamp": sub_df.iloc[0].get("timestamp", None),
@@ -244,14 +252,25 @@ class LeRobotDataset(Dataset):
                     norm_arm_list.append(stats)
                 elif stats_path.exists():
                     stats = compute_lerobot_normalization_stats_from_minmax(stats_path)
-                   
+
                     with open(stats_path_after_compute, "w") as f:
                         json.dump(stats, f, indent=4)
-               
+
                     print(f"computed stats and saved to: {stats_path_after_compute}")
                     norm_arm_list.append(stats)
                 else:
                     raise FileNotFoundError(f"normalization stats file not found: {stats_path}")
+
+                # Apply state slicing to normalization stats if configured
+                state_indices = dataset_config.get('state_indices', None)
+                if state_indices is not None:
+                    print(f"    -- Slicing state stats to indices: {state_indices}")
+                    for stats in norm_arm_list:
+                        if "observation.state" in stats:
+                            state_min = stats["observation.state"]["min"]
+                            state_max = stats["observation.state"]["max"]
+                            stats["observation.state"]["min"] = [state_min[i] for i in state_indices]
+                            stats["observation.state"]["max"] = [state_max[i] for i in state_indices]
             
 
             self.arm2stats_dict[arm_name] = merge_lerobot_stats(norm_arm_list)
