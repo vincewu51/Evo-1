@@ -158,7 +158,9 @@ def prepare_dataset(config: dict) -> torch.utils.data.Dataset:
             max_samples_per_file=max_samples,
             action_horizon=horizon,
             binarize_gripper=binarize_gripper,
-            use_augmentation=use_augmentation
+            use_augmentation=use_augmentation,
+            video_backend="torchcodec",
+            video_backend_kwargs={"device": "cuda"}  # GPU-accelerated decoding
         )
     else:
         raise ValueError(f"Unknown dataset_type: {dataset_type}")
@@ -167,9 +169,17 @@ def prepare_dataset(config: dict) -> torch.utils.data.Dataset:
     return dataset
 
 
+def worker_init_fn(worker_id):
+    """Initialize CUDA in each DataLoader worker for GPU TorchCodec"""
+    import torch
+    if torch.cuda.is_available():
+        torch.cuda.init()
+        torch.cuda.set_device(0)
+
+
 def prepare_dataloader(dataset, config: dict) -> DataLoader:
     batch_size = get_with_warning(config, "batch_size", 8)
-    num_workers = get_with_warning(config, "num_workers", 8)
+    num_workers = get_with_warning(config, "num_workers", 4)
 
     dataloader = DataLoader(
         dataset,
@@ -179,10 +189,12 @@ def prepare_dataloader(dataset, config: dict) -> DataLoader:
         pin_memory=True,
         persistent_workers=False,
         drop_last=True,
-        collate_fn=custom_collate_fn
+        collate_fn=custom_collate_fn,
+        worker_init_fn=worker_init_fn,
+        multiprocessing_context='spawn'  # Use spawn for CUDA compatibility
     )
     if accelerator is None or accelerator.is_main_process:
-        logging.info(f"Initialized dataloader with batch size {batch_size}")
+        logging.info(f"Initialized dataloader with batch size {batch_size}, num_workers {num_workers}")
     return dataloader
 
 
@@ -564,7 +576,7 @@ if __name__ == "__main__":
 
     # Logging & checkpointing
     parser.add_argument("--log_interval", type=int, default=10)
-    parser.add_argument("--ckpt_interval", type=int, default=10)
+    parser.add_argument("--ckpt_interval", type=int, default=500)
     parser.add_argument("--save_dir", type=str, default="./checkpoints")
 
     # Resume
