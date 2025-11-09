@@ -266,38 +266,92 @@ def save_checkpoint(save_dir, step, model_engine, loss, accelerator, config=None
 
 def load_checkpoint_with_deepspeed(model_engine, load_dir, accelerator, tag="step_best", load_optimizer_states=True, resume_pretrain=False):
 
-    try:
-        load_path, client_state = model_engine.load_checkpoint(
-            load_dir,
-            tag=tag,
-            load_module_strict=True,
-            load_optimizer_states=load_optimizer_states and not resume_pretrain,
-            load_lr_scheduler_states=load_optimizer_states and not resume_pretrain
-        )
-        if accelerator.is_main_process:
-            logging.info(f"Loaded DeepSpeed checkpoint from {load_dir}/{tag} (including optimizer states)")
-        return client_state.get("step", 0), client_state
-        
-    except Exception as e:
-        if accelerator.is_main_process:
-            logging.warning(f"World size mismatch detected: {str(e)}")
-            logging.warning("Attempting to load only model weights (skipping optimizer states)...")
+    # Check if model_engine has load_checkpoint method (DeepSpeed engine)
+    if hasattr(model_engine, 'load_checkpoint'):
         try:
             load_path, client_state = model_engine.load_checkpoint(
                 load_dir,
                 tag=tag,
                 load_module_strict=True,
-                load_optimizer_states=False,
-                load_lr_scheduler_states=False
+                load_optimizer_states=load_optimizer_states and not resume_pretrain,
+                load_lr_scheduler_states=load_optimizer_states and not resume_pretrain
             )
             if accelerator.is_main_process:
-                logging.info(f"Loaded DeepSpeed checkpoint from {load_dir}/{tag} (model weights only)")
+                logging.info(f"Loaded DeepSpeed checkpoint from {load_dir}/{tag} (including optimizer states)")
             return client_state.get("step", 0), client_state
-            
-        except Exception as e2:
+
+        except Exception as e:
             if accelerator.is_main_process:
-                logging.error(f"Failed to load checkpoint even without optimizer states: {str(e2)}")
-            raise RuntimeError(f"Failed to load DeepSpeed checkpoint from {load_dir} with tag {tag}: {str(e2)}")
+                logging.warning(f"World size mismatch detected: {str(e)}")
+                logging.warning("Attempting to load only model weights (skipping optimizer states)...")
+            try:
+                load_path, client_state = model_engine.load_checkpoint(
+                    load_dir,
+                    tag=tag,
+                    load_module_strict=True,
+                    load_optimizer_states=False,
+                    load_lr_scheduler_states=False
+                )
+                if accelerator.is_main_process:
+                    logging.info(f"Loaded DeepSpeed checkpoint from {load_dir}/{tag} (model weights only)")
+                return client_state.get("step", 0), client_state
+
+            except Exception as e2:
+                if accelerator.is_main_process:
+                    logging.error(f"Failed to load checkpoint even without optimizer states: {str(e2)}")
+                raise RuntimeError(f"Failed to load DeepSpeed checkpoint from {load_dir} with tag {tag}: {str(e2)}")
+
+    # Fallback: manually load state dict from DeepSpeed checkpoint
+    else:
+        if accelerator.is_main_process:
+            logging.info(f"Model engine doesn't have load_checkpoint method, loading manually...")
+
+        checkpoint_path = os.path.join(load_dir, tag)
+
+        # Load the model state dict
+        model_state_path = os.path.join(checkpoint_path, "mp_rank_00_model_states.pt")
+        if not os.path.exists(model_state_path):
+            raise FileNotFoundError(f"Model checkpoint not found at {model_state_path}")
+
+        if accelerator.is_main_process:
+            logging.info(f"Loading model weights from {model_state_path}")
+
+        # Load checkpoint on CPU first to avoid OOM
+        checkpoint = torch.load(model_state_path, map_location="cpu")
+
+        # Extract the actual model state dict
+        if "module" in checkpoint:
+            state_dict = checkpoint["module"]
+        elif "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        else:
+            state_dict = checkpoint
+
+        # Get the underlying model (unwrap from accelerator)
+        unwrapped_model = accelerator.unwrap_model(model_engine)
+
+        # Load state dict with strict=False for resume_pretrain (allows partial loading)
+        missing_keys, unexpected_keys = unwrapped_model.load_state_dict(state_dict, strict=not resume_pretrain)
+
+        if accelerator.is_main_process:
+            if missing_keys:
+                logging.warning(f"Missing keys when loading checkpoint: {missing_keys}")
+            if unexpected_keys:
+                logging.warning(f"Unexpected keys when loading checkpoint: {unexpected_keys}")
+            logging.info(f"Successfully loaded model weights from {checkpoint_path}")
+
+        # Try to load config if it exists
+        config_path = os.path.join(checkpoint_path, "config.json")
+        client_state = {"step": 0, "best_loss": float("inf")}
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config_data = json.load(f)
+                if "step" in config_data:
+                    client_state["step"] = config_data["step"]
+                if "best_loss" in config_data:
+                    client_state["best_loss"] = config_data["best_loss"]
+
+        return client_state.get("step", 0), client_state
 
     
 

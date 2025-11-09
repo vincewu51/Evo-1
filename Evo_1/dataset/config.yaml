@@ -75,7 +75,7 @@ data_groups:
   # R1Pro robot configuration for 2025 challenge dataset
   r1pro:
     challenge_task0006:
-      path: /home/yifeng/workspace/training_data/2025-challenge-demos-task0006
+      path: /workspace/2025-challenge-demos/data/task-0006
       view_map:
         image_1: observation.images.rgb.head
         image_2: observation.images.rgb.left_wrist

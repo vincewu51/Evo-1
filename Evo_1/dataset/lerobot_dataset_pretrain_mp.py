@@ -312,8 +312,17 @@ class LeRobotDataset(Dataset):
 
 
     def _load_trajectories(self):
+        # Check for cached file list to avoid slow filesystem scanning
+        cache_index_file = self.cache_dir / "file_index_cache.txt"
 
-        
+        if cache_index_file.exists():
+            logging.info(f"Loading cached file index from {cache_index_file}")
+            with open(cache_index_file, 'r') as f:
+                self.data = [line.strip() for line in f if line.strip()]
+            logging.info(f"Loaded {len(self.data)} cached files from index in {len(self.data)/1000000:.2f}M files")
+            return
+
+        logging.info(f"Cache index file not found at {cache_index_file}, will scan filesystem")
 
         parquet_process_units = []
         for arm_name, arm_config in self.config['data_groups'].items():
@@ -323,23 +332,23 @@ class LeRobotDataset(Dataset):
                     raise ValueError(f"Dataset path for '{arm_name}-{dataset_name}' is not configured, please check the config")
                 dataset_path = Path(dataset_path)
                 parquet_files = list(dataset_path.glob("data/*/*.parquet"))
-                
+
                 task_mapping = self.tasks[arm_name][dataset_name]
-                
+
                 for parquet_path in parquet_files:
                     parquet_process_units.append((
-                        parquet_path, 
-                        arm_name, 
-                        dataset_name, 
-                        dataset_config, 
+                        parquet_path,
+                        arm_name,
+                        dataset_name,
+                        dataset_config,
                         dataset_path,
-                        task_mapping,  
+                        task_mapping,
                         self.action_horizon,
                         self.max_samples_per_file,
-                        self.cache_dir  
+                        self.cache_dir
                     ))
 
-       
+
         print(f"total {len(parquet_process_units)} parquet files to process")
 
 
@@ -349,23 +358,30 @@ class LeRobotDataset(Dataset):
 
 
         with mp.get_context('spawn').Pool(processes=num_processes) as pool:
-            
+
             total_episodes = 0
             with tqdm(total=len(parquet_process_units), desc="Processing Parquet files to cache") as pbar:
                 for episode_files, error in pool.imap_unordered(_process_parquet_file_worker, parquet_process_units):
                     if error:
                         logging.error(error)
                     else:
-                        self.data.extend(episode_files)  
+                        self.data.extend(episode_files)
                         total_episodes += len(episode_files)
-                    
+
                     pbar.set_postfix({
                         'episodes_this_file': len(episode_files),
                         'total_episodes': total_episodes
                     })
                     pbar.update(1)
-        
+
         print(f"Data processing completed, total {len(self.data)} files generated")
+
+        # Save file list to cache for next run
+        print(f"Saving file index cache to {cache_index_file}")
+        with open(cache_index_file, 'w') as f:
+            for filepath in self.data:
+                f.write(f"{filepath}\n")
+        print(f"Saved {len(self.data)} files to index cache")
 
 
     def _pad_tensor(
